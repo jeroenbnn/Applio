@@ -123,33 +123,7 @@ with gr.Blocks(theme=my_applio, title="Applio") as Applio:
 
 
 def launch_gradio(port):
-    Applio.launch(
-        favicon_path="assets/ICON.ico",
-        share="--share" in sys.argv,
-        inbrowser="--open" in sys.argv,
-        server_port=port,
-    )
-
-
-def get_port_from_args():
-    if "--port" in sys.argv:
-        port_index = sys.argv.index("--port") + 1
-        if port_index < len(sys.argv):
-            return int(sys.argv[port_index])
-    return DEFAULT_PORT
-
+    Applio.launch(share=True)
 
 if __name__ == "__main__":
-    port = get_port_from_args()
-    for _ in range(MAX_PORT_ATTEMPTS):
-        try:
-            launch_gradio(port)
-            break
-        except OSError:
-            print(
-                f"Failed to launch on port {port}, trying again on port {port - 1}..."
-            )
-            port -= 1
-        except Exception as error:
-            print(f"An error occurred launching Gradio: {error}")
-            break
+    launch_gradio()
