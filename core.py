@@ -1,3 +1,4 @@
+import spaces
 import os
 import sys
 import json
@@ -437,6 +438,7 @@ def run_extract_script(
 
 
 # Train
+@spaces.GPU
 def run_train_script(
     model_name: str,
     rvc_version: str,
