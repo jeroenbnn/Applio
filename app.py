@@ -125,5 +125,6 @@ with gr.Blocks(theme=my_applio, title="Applio") as Applio:
 def launch_gradio():
     Applio.launch(share=True)
 
+
 if __name__ == "__main__":
     launch_gradio()
