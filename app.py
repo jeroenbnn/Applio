@@ -122,7 +122,7 @@ with gr.Blocks(theme=my_applio, title="Applio") as Applio:
         restart_tab()
 
 
-def launch_gradio(port):
+def launch_gradio():
     Applio.launch(share=True)
 
 if __name__ == "__main__":
