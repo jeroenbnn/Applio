@@ -131,6 +131,13 @@ class Config:
     def set_cuda_config(self):
         i_device = int(self.device.split(":")[-1])
         self.gpu_name = torch.cuda.get_device_name(i_device)
+        # Zluda
+        if self.gpu_name.endswith("[ZLUDA]"):
+            print("Zluda compatibility enabled, experimental feature.")
+            torch.backends.cudnn.enabled = False
+            torch.backends.cuda.enable_flash_sdp(False)
+            torch.backends.cuda.enable_math_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
         low_end_gpus = ["16", "P40", "P10", "1060", "1070", "1080"]
         if (
             any(gpu in self.gpu_name for gpu in low_end_gpus)
@@ -163,9 +170,17 @@ def get_gpu_info():
                 torch.cuda.get_device_properties(i).total_memory / 1024 / 1024 / 1024
                 + 0.4
             )
-            gpu_infos.append("%s: %s %s GB" % (i, gpu_name, mem))
+            gpu_infos.append(f"{i}: {gpu_name} ({mem} GB)")
     if len(gpu_infos) > 0:
         gpu_info = "\n".join(gpu_infos)
     else:
         gpu_info = "Unfortunately, there is no compatible GPU available to support your training."
     return gpu_info
+
+
+def get_number_of_gpus():
+    if torch.cuda.is_available():
+        num_gpus = torch.cuda.device_count()
+        return "-".join(map(str, range(num_gpus)))
+    else:
+        return "-"

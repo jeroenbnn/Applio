@@ -1,19 +1,21 @@
 import os
-from multiprocessing import cpu_count
-import sys
 import shutil
+import sys
+from multiprocessing import cpu_count
+
 import gradio as gr
+
 from assets.i18n.i18n import I18nAuto
 from core import (
-    run_preprocess_script,
     run_extract_script,
-    run_train_script,
     run_index_script,
+    run_preprocess_script,
     run_prerequisites_script,
+    run_train_script,
 )
-from rvc.configs.config import max_vram_gpu, get_gpu_info
+from rvc.configs.config import get_gpu_info, get_number_of_gpus, max_vram_gpu
 from rvc.lib.utils import format_title
-from tabs.settings.restart import restart_applio
+from tabs.settings.restart import stop_train
 
 i18n = I18nAuto()
 now_dir = os.getcwd()
@@ -61,7 +63,7 @@ sup_audioext = {
 
 # Custom Pretraineds
 pretraineds_custom_path = os.path.join(
-    now_dir, "rvc", "pretraineds", "pretraineds_custom"
+    now_dir, "rvc", "models", "pretraineds", "pretraineds_custom"
 )
 
 pretraineds_custom_path_relative = os.path.relpath(pretraineds_custom_path, now_dir)
@@ -141,13 +143,12 @@ def refresh_models_and_datasets():
     )
 
 
-# Refresh Custom Pretraineds
+# Refresh Custom Embedders
 def get_embedder_custom_list():
     return [
-        os.path.join(dirpath, filename)
-        for dirpath, _, filenames in os.walk(custom_embedder_root_relative)
-        for filename in filenames
-        if filename.endswith(".pt")
+        os.path.join(dirpath, dirname)
+        for dirpath, dirnames, _ in os.walk(custom_embedder_root_relative)
+        for dirname in dirnames
     ]
 
 
@@ -168,7 +169,7 @@ def save_drop_model(dropbox):
         pretrained_path = os.path.join(pretraineds_custom_path_relative, file_name)
         if os.path.exists(pretrained_path):
             os.remove(pretrained_path)
-        os.rename(dropbox, pretrained_path)
+        shutil.copy(dropbox, pretrained_path)
         gr.Info(
             i18n(
                 "Click the refresh button to see the pretrained file in the dropdown menu."
@@ -195,7 +196,7 @@ def save_drop_dataset_audio(dropbox, dataset_name):
             destination_path = os.path.join(dataset_path, audio_file)
             if os.path.exists(destination_path):
                 os.remove(destination_path)
-            os.rename(dropbox, destination_path)
+            shutil.copy(dropbox, destination_path)
             gr.Info(
                 i18n(
                     "The audio file has been successfully added to the dataset. Please click the preprocess button."
@@ -208,23 +209,31 @@ def save_drop_dataset_audio(dropbox, dataset_name):
 
 
 # Drop Custom Embedder
-def save_drop_custom_embedder(dropbox):
-    if ".pt" not in dropbox:
-        gr.Info(
-            i18n("The file you dropped is not a valid embedder file. Please try again.")
-        )
-    else:
-        file_name = os.path.basename(dropbox)
-        custom_embedder_path = os.path.join(custom_embedder_root, file_name)
-        if os.path.exists(custom_embedder_path):
-            os.remove(custom_embedder_path)
-        os.rename(dropbox, custom_embedder_path)
-        gr.Info(
-            i18n(
-                "Click the refresh button to see the embedder file in the dropdown menu."
-            )
-        )
-    return None
+def create_folder_and_move_files(folder_name, bin_file, config_file):
+    if not folder_name:
+        return "Folder name must not be empty."
+
+    folder_name = os.path.join(custom_embedder_root, folder_name)
+    os.makedirs(folder_name, exist_ok=True)
+
+    if bin_file:
+        bin_file_path = os.path.join(folder_name, os.path.basename(bin_file))
+        shutil.copy(bin_file, bin_file_path)
+
+    if config_file:
+        config_file_path = os.path.join(folder_name, os.path.basename(config_file))
+        shutil.copy(config_file, config_file_path)
+
+    return f"Files moved to folder {folder_name}"
+
+
+def refresh_embedders_folders():
+    custom_embedders = [
+        os.path.join(dirpath, dirname)
+        for dirpath, dirnames, _ in os.walk(custom_embedder_root_relative)
+        for dirname in dirnames
+    ]
+    return custom_embedders
 
 
 # Export
@@ -293,76 +302,90 @@ def upload_to_google_drive(pth_path, index_path):
 
 # Train Tab
 def train_tab():
+    with gr.Row():
+        model_name = gr.Dropdown(
+            label=i18n("Model Name"),
+            info=i18n("Name of the new model."),
+            choices=get_models_list(),
+            value="my-project",
+            interactive=True,
+            allow_custom_value=True,
+        )
+        sampling_rate = gr.Radio(
+            label=i18n("Sampling Rate"),
+            info=i18n("The sampling rate of the audio files."),
+            choices=["32000", "40000", "48000"],
+            value="40000",
+            interactive=True,
+        )
+        rvc_version = gr.Radio(
+            label=i18n("Model Architecture"),
+            info=i18n("Version of the model architecture."),
+            choices=["v1", "v2"],
+            value="v2",
+            interactive=True,
+        )
     with gr.Accordion(i18n("Preprocess")):
-        with gr.Row():
-            with gr.Column():
-                model_name = gr.Dropdown(
-                    label=i18n("Model Name"),
-                    info=i18n("Name of the new model."),
-                    choices=get_models_list(),
-                    value="my-project",
+        dataset_path = gr.Dropdown(
+            label=i18n("Dataset Path"),
+            info=i18n("Path to the dataset folder."),
+            # placeholder=i18n("Enter dataset path"),
+            choices=get_datasets_list(),
+            allow_custom_value=True,
+            interactive=True,
+        )
+        dataset_creator = gr.Checkbox(
+            label=i18n("Dataset Creator"),
+            value=False,
+            interactive=True,
+            visible=True,
+        )
+        with gr.Column(visible=False) as dataset_creator_settings:
+            with gr.Accordion(i18n("Dataset Creator")):
+                dataset_name = gr.Textbox(
+                    label=i18n("Dataset Name"),
+                    info=i18n("Name of the new dataset."),
+                    placeholder=i18n("Enter dataset name"),
                     interactive=True,
-                    allow_custom_value=True,
                 )
-                dataset_path = gr.Dropdown(
-                    label=i18n("Dataset Path"),
-                    info=i18n("Path to the dataset folder."),
-                    # placeholder=i18n("Enter dataset path"),
-                    choices=get_datasets_list(),
-                    allow_custom_value=True,
+                upload_audio_dataset = gr.File(
+                    label=i18n("Upload Audio Dataset"),
+                    type="filepath",
                     interactive=True,
                 )
-                refresh = gr.Button(i18n("Refresh"))
-                dataset_creator = gr.Checkbox(
-                    label=i18n("Dataset Creator"),
-                    value=False,
+        refresh = gr.Button(i18n("Refresh"))
+
+        with gr.Accordion(i18n("Advanced Settings"), open=False):
+            cpu_cores_preprocess = gr.Slider(
+                1,
+                64,
+                cpu_count(),
+                step=1,
+                label=i18n("CPU Cores"),
+                info=i18n(
+                    "The number of CPU cores to use in the preprocess. The default setting are your cpu cores, which is recommended for most cases."
+                ),
+                interactive=True,
+            )
+            with gr.Row():
+                cut_preprocess = gr.Checkbox(
+                    label=i18n("Audio cutting"),
+                    info=i18n(
+                        "It's recommended to deactivate this option if your dataset has already been processed."
+                    ),
+                    value=True,
                     interactive=True,
                     visible=True,
                 )
-
-                with gr.Column(visible=False) as dataset_creator_settings:
-                    with gr.Accordion(i18n("Dataset Creator")):
-                        dataset_name = gr.Textbox(
-                            label=i18n("Dataset Name"),
-                            info=i18n("Name of the new dataset."),
-                            placeholder=i18n("Enter dataset name"),
-                            interactive=True,
-                        )
-                        upload_audio_dataset = gr.File(
-                            label=i18n("Upload Audio Dataset"),
-                            type="filepath",
-                            interactive=True,
-                        )
-
-            with gr.Column():
-                sampling_rate = gr.Radio(
-                    label=i18n("Sampling Rate"),
-                    info=i18n("The sampling rate of the audio files."),
-                    choices=["32000", "40000", "48000"],
-                    value="40000",
-                    interactive=True,
-                )
-
-                rvc_version = gr.Radio(
-                    label=i18n("RVC Version"),
-                    info=i18n("The RVC version of the model."),
-                    choices=["v1", "v2"],
-                    value="v2",
-                    interactive=True,
-                )
-
-                cpu_cores_preprocess = gr.Slider(
-                    1,
-                    64,
-                    cpu_count(),
-                    step=1,
-                    label=i18n("CPU Cores"),
+                process_effects = gr.Checkbox(
+                    label=i18n("Process effects"),
                     info=i18n(
-                        "The number of CPU cores to utilize. The default setting are your cpu cores, which is recommended for most cases."
+                        "It's recommended to deactivate this option if your dataset has already been processed."
                     ),
+                    value=True,
                     interactive=True,
+                    visible=True,
                 )
-
         preprocess_output_info = gr.Textbox(
             label=i18n("Output Information"),
             info=i18n("The output information will be displayed here."),
@@ -375,7 +398,14 @@ def train_tab():
             preprocess_button = gr.Button(i18n("Preprocess Dataset"))
             preprocess_button.click(
                 fn=run_preprocess_script,
-                inputs=[model_name, dataset_path, sampling_rate, cpu_cores_preprocess],
+                inputs=[
+                    model_name,
+                    dataset_path,
+                    sampling_rate,
+                    cpu_cores_preprocess,
+                    cut_preprocess,
+                    process_effects,
+                ],
                 outputs=[preprocess_output_info],
                 api_name="preprocess_dataset",
             )
@@ -397,13 +427,15 @@ def train_tab():
                 info=i18n("Model used for learning speaker embedding."),
                 choices=[
                     "contentvec",
+                    "chinese-hubert-base",
                     "japanese-hubert-base",
-                    "chinese-hubert-large",
+                    "korean-hubert-base",
                     "custom",
                 ],
                 value="contentvec",
                 interactive=True,
             )
+
         hop_length = gr.Slider(
             1,
             512,
@@ -416,6 +448,25 @@ def train_tab():
             visible=False,
             interactive=True,
         )
+        with gr.Row(visible=False) as embedder_custom:
+            with gr.Accordion("Custom Embedder", open=True):
+                with gr.Row():
+                    embedder_model_custom = gr.Dropdown(
+                        label="Select Custom Embedder",
+                        choices=refresh_embedders_folders(),
+                        interactive=True,
+                        allow_custom_value=True,
+                    )
+                    refresh_embedders_button = gr.Button("Refresh embedders")
+                folder_name_input = gr.Textbox(label="Folder Name", interactive=True)
+                with gr.Row():
+                    bin_file_upload = gr.File(
+                        label="Upload .bin", type="filepath", interactive=True
+                    )
+                    config_file_upload = gr.File(
+                        label="Upload .json", type="filepath", interactive=True
+                    )
+                move_files_button = gr.Button("Move files to custom embedder folder")
         pitch_guidance_extract = gr.Checkbox(
             label=i18n("Pitch Guidance"),
             info=i18n(
@@ -440,7 +491,7 @@ def train_tab():
                         step=1,
                         label=i18n("CPU Cores"),
                         info=i18n(
-                            "The number of CPU cores to use in the index extraction process. The default setting are your cpu cores, which is recommended for most cases."
+                            "The number of CPU cores to use in the extraction process. The default setting are your cpu cores, which is recommended for most cases."
                         ),
                         interactive=True,
                     )
@@ -449,10 +500,10 @@ def train_tab():
                     gpu_extract = gr.Textbox(
                         label=i18n("GPU Number"),
                         info=i18n(
-                            "Specify the number of GPUs you wish to utilize for training by entering them separated by hyphens (-)."
+                            "Specify the number of GPUs you wish to utilize for extracting by entering them separated by hyphens (-)."
                         ),
                         placeholder=i18n("0 to ∞ separated by -"),
-                        value="0",
+                        value=str(get_number_of_gpus()),
                         interactive=True,
                     )
                     gr.Textbox(
@@ -460,24 +511,6 @@ def train_tab():
                         info=i18n("The GPU information will be displayed here."),
                         value=get_gpu_info(),
                         interactive=False,
-                    )
-
-            with gr.Column(visible=False) as embedder_custom:
-                with gr.Accordion(i18n("Custom Embedder"), open=True):
-                    embedder_upload_custom = gr.File(
-                        label=i18n("Upload Custom Embedder"),
-                        type="filepath",
-                        interactive=True,
-                    )
-                    embedder_custom_refresh = gr.Button(i18n("Refresh"))
-                    embedder_model_custom = gr.Dropdown(
-                        label=i18n("Custom Embedder"),
-                        info=i18n(
-                            "Select the custom embedder to use for the conversion."
-                        ),
-                        choices=sorted(get_embedder_custom_list()),
-                        interactive=True,
-                        allow_custom_value=True,
                     )
 
         extract_output_info = gr.Textbox(
@@ -646,7 +679,7 @@ def train_tab():
                                 "Specify the number of GPUs you wish to utilize for training by entering them separated by hyphens (-)."
                             ),
                             placeholder=i18n("0 to ∞ separated by -"),
-                            value="0",
+                            value=str(get_number_of_gpus()),
                             interactive=True,
                         )
                         gr.Textbox(
@@ -676,6 +709,15 @@ def train_tab():
                             ),
                             interactive=True,
                         )
+                index_algorithm = gr.Radio(
+                    label=i18n("Index Algorithm"),
+                    info=i18n(
+                        "KMeans is a clustering algorithm that divides the dataset into K clusters. This setting is particularly useful for large datasets."
+                    ),
+                    choices=["Auto", "Faiss", "KMeans"],
+                    value="Auto",
+                    interactive=True,
+                )
 
         with gr.Row():
             train_output_info = gr.Textbox(
@@ -705,6 +747,7 @@ def train_tab():
                     overtraining_threshold,
                     pretrained,
                     sync_graph,
+                    index_algorithm,
                     cache_dataset_in_gpu,
                     custom_pretrained,
                     g_pretrained_path,
@@ -714,19 +757,17 @@ def train_tab():
                 api_name="start_training",
             )
 
-            stop_train_button = gr.Button(
-                i18n("Stop Training & Restart Applio"), visible=False
-            )
+            stop_train_button = gr.Button(i18n("Stop Training"), visible=False)
             stop_train_button.click(
-                fn=restart_applio,
-                inputs=[],
+                fn=stop_train,
+                inputs=[model_name],
                 outputs=[],
             )
 
             index_button = gr.Button(i18n("Generate Index"))
             index_button.click(
                 fn=run_index_script,
-                inputs=[model_name, rvc_version],
+                inputs=[model_name, rvc_version, index_algorithm],
                 outputs=[train_output_info],
                 api_name="generate_index",
             )
@@ -869,17 +910,19 @@ def train_tab():
                 inputs=[embedder_model],
                 outputs=[embedder_custom],
             )
-            embedder_upload_custom.upload(
-                fn=save_drop_custom_embedder,
-                inputs=[embedder_upload_custom],
-                outputs=[embedder_upload_custom],
+            embedder_model.change(
+                fn=toggle_visible_embedder_custom,
+                inputs=[embedder_model],
+                outputs=[embedder_custom],
             )
-            embedder_custom_refresh.click(
-                fn=refresh_custom_embedder_list,
-                inputs=[],
-                outputs=[embedder_model_custom],
+            move_files_button.click(
+                fn=create_folder_and_move_files,
+                inputs=[folder_name_input, bin_file_upload, config_file_upload],
+                outputs=[],
             )
-
+            refresh_embedders_button.click(
+                fn=refresh_embedders_folders, inputs=[], outputs=[embedder_model_custom]
+            )
             pretrained.change(
                 fn=toggle_pretrained,
                 inputs=[pretrained, custom_pretrained],

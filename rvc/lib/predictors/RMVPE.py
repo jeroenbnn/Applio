@@ -356,7 +356,7 @@ class MelSpectrogram(torch.nn.Module):
     Args:
         is_half (bool): Whether to use half-precision floating-point numbers.
         n_mel_channels (int): Number of Mel-frequency bands.
-        sampling_rate (int): Sampling rate of the audio.
+        sample_rate (int): Sampling rate of the audio.
         win_length (int): Length of the window function in samples.
         hop_length (int): Hop size between frames in samples.
         n_fft (int, optional): Length of the FFT window. Defaults to None, which uses win_length.
@@ -369,7 +369,7 @@ class MelSpectrogram(torch.nn.Module):
         self,
         is_half,
         n_mel_channels,
-        sampling_rate,
+        sample_rate,
         win_length,
         hop_length,
         n_fft=None,
@@ -381,7 +381,7 @@ class MelSpectrogram(torch.nn.Module):
         n_fft = win_length if n_fft is None else n_fft
         self.hann_window = {}
         mel_basis = mel(
-            sr=sampling_rate,
+            sr=sample_rate,
             n_fft=n_fft,
             n_mels=n_mel_channels,
             fmin=mel_fmin,
@@ -393,7 +393,7 @@ class MelSpectrogram(torch.nn.Module):
         self.n_fft = win_length if n_fft is None else n_fft
         self.hop_length = hop_length
         self.win_length = win_length
-        self.sampling_rate = sampling_rate
+        self.sample_rate = sample_rate
         self.n_mel_channels = n_mel_channels
         self.clamp = clamp
         self.is_half = is_half
@@ -408,6 +408,15 @@ class MelSpectrogram(torch.nn.Module):
             self.hann_window[keyshift_key] = torch.hann_window(win_length_new).to(
                 audio.device
             )
+
+        # Zluda, fall-back to CPU for FFTs since HIP SDK has no cuFFT alternative
+        source_device = audio.device
+        if audio.device.type == "cuda" and torch.cuda.get_device_name().endswith(
+            "[ZLUDA]"
+        ):
+            audio = audio.to("cpu")
+            self.hann_window[keyshift_key] = self.hann_window[keyshift_key].to("cpu")
+
         fft = torch.stft(
             audio,
             n_fft=n_fft_new,
@@ -416,7 +425,8 @@ class MelSpectrogram(torch.nn.Module):
             window=self.hann_window[keyshift_key],
             center=center,
             return_complex=True,
-        )
+        ).to(source_device)
+
         magnitude = torch.sqrt(fft.real.pow(2) + fft.imag.pow(2))
         if keyshift != 0:
             size = self.n_fft // 2 + 1
